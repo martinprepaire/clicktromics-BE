@@ -1,13 +1,13 @@
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from src.logger import Logger  # Add this import!
+from src.logger import Logger 
 from pathlib import Path
 from src.config import root_directory
 from src.utils import transform_keys
 
 log = Logger.get_logger()
-router = APIRouter(prefix="/organs", tags=["Organs Data - Human Anatomy"])
+router = APIRouter(prefix="/organs", tags=["Fetch organs list"])
 
 # Preload data once at import time
 json_file_path = Path(root_directory) / "dataset" / "organs.json"
@@ -25,33 +25,10 @@ except Exception as e:
     organs_data = None
     log.error(f"Failed to load organs data on startup: {e}")
 
-@router.get("", 
-    summary="Fetch human organs data",
-    description="""
-    Retrieve comprehensive data about human organs and anatomical structures.
-    
-    **What this endpoint does:**
-    - Loads pre-compiled organs dataset
-    - Provides anatomical information
-    - Returns structured organ data
-    
-    **Use Cases:**
-    - Medical research
-    - Anatomical studies
-    - Healthcare applications
-    - Educational content
-    
-    **Output:** Complete organs dataset with anatomical details
-    """,
-    response_description="Human organs dataset with anatomical information",
-    responses={
-        200: {"description": "Organs data retrieved successfully"},
-        500: {"description": "Organs data not available"}
-    }
-)
+@router.get("")
 async def fetch_organs():
     if organs_data is None:
         raise HTTPException(status_code=500, detail="Organs data not available")
     
     log.info("Successfully fetched organs data from memory")
-    return JSONResponse(content={"status": "success", "data": organs_data}, status_code=200) 
+    return JSONResponse(content={"status": "success", "data": organs_data}, status_code=200)
