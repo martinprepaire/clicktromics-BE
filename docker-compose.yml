@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  sandbox:
+    build:
+      context: .
+    container_name: sandbox-BE
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - dt-file-backup:/data
+    env_file:
+      - .env
+    ports:
+      - "7000:80"
+    networks:
+      - development
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+
+volumes:
+  dt-file-backup:
+    external: true
+
+networks:
+  development:
+    external: true

@@ -1,0 +1,13 @@
+python-multipart
+fastapi
+uvicorn
+python-dotenv
+pydantic
+pymongo
+boto3
+python-magic
+admet_ai
+chemfunc
+chemprop
+openbabel-wheel
+rdkit
