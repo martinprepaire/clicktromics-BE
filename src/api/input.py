@@ -1,49 +1,26 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
 from fastapi.responses import JSONResponse
 import requests
 import os
-from src.config import RCSB_URL
+from src.config import RCSB_URL, DEFAULT_BUCKET_NAME
 from src.logger import Logger
 from src.request_model import PdbRequest
+from src.helper.aws.s3 import get_s3_service, S3Service
+from src.auth.dependencies import require_auth
+from src.documents.profile import AuthProfile
 
 log = Logger.get_logger()
 router = APIRouter(
     prefix="/input",
-    tags=["Input Management - PDB Files & Data"]
+    tags=["Input"]
 )
 
-# Local storage path
-LOCAL_STORAGE_PATH = "./data/input"
-os.makedirs(LOCAL_STORAGE_PATH, exist_ok=True)
-
-@router.post("/pdb_id/", 
-    summary="Download PDB file from RCSB by ID",
-    description="""
-    Download a PDB (Protein Data Bank) file from rcsb.org by providing a PDB ID.
-    
-    **What this endpoint does:**
-    - Fetches PDB file from RCSB database
-    - Stores file locally for processing
-    - Returns local file path for access
-    
-    **Use Cases:**
-    - Protein structure analysis
-    - Molecular modeling workflows
-    - Structural biology research
-    - Drug design projects
-    
-    **Input:** PDB ID (e.g., "1ABC", "7XYZ")
-    **Output:** File storage path and local access
-    """,
-    response_description="PDB file download result with storage path",
-    responses={
-        200: {"description": "PDB file downloaded successfully"},
-        400: {"description": "Missing PDB ID"},
-        404: {"description": "PDB file not found on RCSB"},
-        500: {"description": "Internal server error during download"}
-    }
-)
-async def download_pdb_by_id(request: PdbRequest):
+@router.post("/pdb_id/")
+async def download_pdb_by_id(
+    request: PdbRequest,
+    s3: S3Service = Depends(get_s3_service),
+    current_user: AuthProfile = require_auth()
+):
     """Download PDB file from rcsb.org by providing PDB ID"""
     
     if not request.pdb_id:
@@ -60,14 +37,20 @@ async def download_pdb_by_id(request: PdbRequest):
 
         response_data = response.content
         filename = f"{pdb_id}.pdb"
-        file_path = os.path.join(LOCAL_STORAGE_PATH, filename)
+        file_path = f"output_{pdb_id}.pdb"
 
         with open(file_path, "wb") as f:
             f.write(response_data)
 
+        with open(file_path, "rb") as f:
+            objectname = "input/" + s3.generate_valid_object_name(filename)
+            s3.upload_file(f, DEFAULT_BUCKET_NAME, objectname)
+            url = s3.generate_presigned_url(DEFAULT_BUCKET_NAME, objectname)
+
+        os.remove(file_path)
         result = {
             "message": f"PDB file {filename} has been downloaded successfully",
-            "local_file_path": file_path
+            "pdp_file_path": str(url)
         }
         return JSONResponse(content={"status": "success", "data": result}, status_code=200)
     except Exception as e:
@@ -76,47 +59,24 @@ async def download_pdb_by_id(request: PdbRequest):
         return JSONResponse(content={"status": "error", "message": "Error encountered during processing. Please review the application log for detailed information"}, status_code=500)
 
 
-@router.post("/upload/", 
-    summary="Upload PDB file for processing",
-    description="""
-    Upload a PDB file and save it locally for later use with bioinformatics tools.
-    
-    **What this endpoint does:**
-    - Accepts PDB file uploads
-    - Stores file in local storage system
-    - Provides local file path for access
-    
-    **Use Cases:**
-    - Custom protein structure uploads
-    - Batch processing workflows
-    - Integration with external tools
-    - Research collaboration
-    
-    **Input:** PDB file upload
-    **Output:** File storage confirmation and local path
-    """,
-    response_description="PDB file upload result with storage path",
-    responses={
-        200: {"description": "PDB file uploaded successfully"},
-        500: {"description": "Internal server error during upload"}
-    }
-)
-async def upload_pdb_file(file: UploadFile = File(...)):
-    """Upload PDB file and save it locally to use it later with diffab"""
+@router.post("/upload/")
+async def upload_pdb_file(
+    file: UploadFile = File(...),
+    s3: S3Service = Depends(get_s3_service),
+    current_user: AuthProfile = require_auth()
+):
+    """Upload PDB file and save it in S3 to use it later with diffab"""
     try:
-        filename = file.filename
-        file_path = os.path.join(LOCAL_STORAGE_PATH, filename)
-        
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        objectname = "input/" + s3.generate_valid_object_name(file. filename)
+        s3.upload_file(file, DEFAULT_BUCKET_NAME, objectname)
+        url = s3.generate_presigned_url(DEFAULT_BUCKET_NAME, objectname)
 
         result = {
-            "message": f"PDB file {filename} has been uploaded successfully",
-            "local_file_path": file_path
+            "message": f"PDB file {file.filename} has been uploaded successfully",
+            "pdp_file_path": str(url)
         }
         return JSONResponse(content={"status": "success", "data": result}, status_code=200)
     except Exception as e:
         error_message = str(e) if str(e) else "Unknown error occurred"
         log.error(f"Error upload_pdb_file: {error_message}")
-        return JSONResponse(content={"status": "error", "message": "Error encountered during processing. Please review the application log for detailed information"}, status_code=500) 
+        return JSONResponse(content={"status": "error", "message": "Error encountered during processing. Please review the application log for detailed information"}, status_code=500)

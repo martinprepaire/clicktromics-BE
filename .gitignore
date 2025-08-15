@@ -1,0 +1,9 @@
+*__pycache__*
+
+*.log
+*.state
+*IOO*
+*env*
+
+*.pid
+*.pem

@@ -1,3 +1,4 @@
+
 import os
 import requests
 from abc import ABC, abstractmethod
@@ -122,4 +123,4 @@ def get_storage_adapter() -> StorageAdapter:
         download_fallback = LocalAdapter(LOCAL_STORAGE_PATH)
         upload_fallback = LocalAdapter(LOCAL_STORAGE_PATH)
 
-    return FallbackAdapter(primary, download_fallback, upload_fallback) 
+    return FallbackAdapter(primary, download_fallback, upload_fallback)

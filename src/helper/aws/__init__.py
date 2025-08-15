@@ -1,1 +1,0 @@
-# AWS S3 integration and services 

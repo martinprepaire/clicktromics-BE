@@ -1,8 +1,18 @@
-from fastapi import APIRouter, Depends, Form
-from bio_core import Logger
+from fastapi import APIRouter, Depends, Form, HTTPException
+from src.logger import Logger
 
 from fastapi.responses import JSONResponse
-from bio_core import JobType, JobDocument, PipelineName, BaseJobManager, PipelineClient, Logger
+from src.documents.jobs import JobType, JobDocument, JobTypeEnum
+from src.repo.jobs import JobRepo
+from src.auth.dependencies import require_user_context
+from src.documents.profile import AuthProfile
+from src.helper.file_adapter import get_storage_adapter, StorageAdapter
+from src.helper.aws.s3 import get_s3_service, S3Service
+from src.helper.aws.batch import submit_job
+from src.config import JOB_QUEUE_ARN_GPU, DEFAULT_BUCKET_NAME, JOB_DEFINITION_ARN_MICROBIOME, USE_AWS
+from src.tasks.batch.update import update_job_status
+from src.tasks.microbiome.tasks import run_microbiome_job
+from src.request_model import JobSuccessResponse, JobErrorResponse, JobData
 
 log = Logger.get_logger()
 
@@ -14,21 +24,21 @@ class MethodEnum(str, Enum):
     SHOTGUN = "shotgun"
     _16S = "16s"
 
-
 @router.post("",
-    summary="Submit a Microbiome File Processing job",
+    response_model=JobSuccessResponse,
+    responses={
+        200: {"description": "Job submitted successfully", "model": JobSuccessResponse},
+        400: {"description": "Bad request", "model": JobErrorResponse},
+        500: {"description": "Internal server error", "model": JobErrorResponse}
+    },
+    summary="Submit a Microbiome Analysis job",
     description="""
-Submit a long-running background job for processing genetic data from VCF or FASTQ files.  
-This endpoint handles two pipeline types:
-- `shotgun`: Processes a pair of `.fastq` or `.fastq.gz` files (Microbiome SHOTGUN).
-- `16s`: Processes a pair of `.fastq` or `.fastq.gz` files (Microbiome SHOTGUN).
+Submit a long-running background job for microbiome analysis.
 
 ### Input Parameters (multipart/form-data):
-- **file_r1** (`str`, required): the first `.fastq` or `.fastq.gz` file.
-- **file_r2** (`str`, required): the second `.fastq` or `.fastq.gz` file.
-- **method** (`Method`, required): Type of pipeline to execute.
-  - `shotgun`
-  - `16s`
+- **file_r1** (`str`, required): Path or identifier of the first FASTQ file (R1).
+- **file_r2** (`str`, required): Path or identifier of the second FASTQ file (R2).
+- **method** (`str`, required): Analysis method to use for microbiome processing.
 
 ### Behavior:
 - A job is created and stored in the system.
@@ -37,21 +47,18 @@ This endpoint handles two pipeline types:
 
 ### Responses:
 - `200 OK`: Job successfully submitted.
-  ```json
-  {
-    "status": "success",
-    "data": {
-      "job_id": "<uuid>",
-      "message": "Job submitted successfully"
-    }
-  }
-  """
+- `400 Bad Request`: Invalid input parameters.
+- `500 Internal Server Error`: Server error during processing.
+    """
 )
 async def submit_job(
     file_r1: str = Form(...),
     file_r2: str = Form(...),
     method: MethodEnum = Form(...),
-    job_manager: BaseJobManager = Depends(lambda: BaseJobManager())
+    repo: JobRepo = Depends(lambda: JobRepo()),
+    current_user: AuthProfile = require_user_context(),
+    adapter: StorageAdapter = Depends(get_storage_adapter),
+    s3: S3Service = Depends(get_s3_service),
 ):  
     """
        Submit a long-running process and provide a unique job ID to track the status of the process.
@@ -60,7 +67,7 @@ async def submit_job(
             output: Text file (.txt) in case shotgun or csv and tsv in case 16s .
     """
     try:
-        job = JobDocument(type=JobType(name=PipelineName.MICROBIOME))
+        job = JobDocument(type=JobType(name=JobTypeEnum.MICROBIOME), user_email=current_user.email)
         log.info(f"Creating Job: {job}")
         job.inputs = {
                 "file": [
@@ -69,15 +76,46 @@ async def submit_job(
                 ]
         } 
 
-        task = PipelineClient.submit_pipeline(job, file_r1, file_r2, method.value)
-        job.task_id = task.id
-        await job_manager.save(job)
+        if USE_AWS:
+            job.outputs = {
+                "files": ["microbiome/" + job.job_id + "/" + s3.generate_valid_object_name("microbiome_output")]
+            }
 
-        return JSONResponse(content={"status": "success", "data":{"job_id": job.job_id, "message": "Job submitted successfully"}}, status_code=200)
+            response = submit_job(
+                JOB_QUEUE_ARN_GPU,
+                JOB_DEFINITION_ARN_MICROBIOME,
+                [
+                    {"name": "INPUT_R1", "value": file_r1},
+                    {"name": "INPUT_R2", "value": file_r2},
+                    {"name": "METHOD", "value": method.value},
+                    {"name": "OUTPUT", "value": job.outputs["files"][0]},
+                    {"name": "BUCKET", "value": DEFAULT_BUCKET_NAME}
+                ],
+                job.type.name.value,
+                job.job_id
+            )
+            if not response:
+                raise Exception("Error when submitting job to AWS.")
+                            
+            job.batch_id = response['jobId']
+            task = update_job_status.delay(job.job_id, job.batch_id)
+        else:
+            log.warning("AWS is disabled.")
+            task = run_microbiome_job.delay(job.job_id, file_r1, file_r2, method.value)
+
+        job.task_id = task.id
+        await repo.save(job)
+
+        return JobSuccessResponse(
+            data=JobData(
+                job_id=job.job_id,
+                message="Job submitted successfully"
+            )
+        )
     except Exception as e:
         error_message = str(e) or "Unknown error occurred"
-        log.error(f"Error in submit_job: {error_message}")
-        return JSONResponse(
-            content={"status": "error", "message": f"Error encountered during processing: {error_message}"},
+        log.error(f"Error in /microbiome: {error_message}")
+        raise HTTPException(
             status_code=500,
-        )
+            detail=f"Error encountered during processing: {error_message}"
+        ) 

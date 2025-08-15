@@ -3,10 +3,10 @@ from typing import List, Optional, Tuple
 import re
 from typing import Generic, List, TypeVar
 from src.documents.malacard import DiseaseDocument
+from src.mongo_client import Mongo
 from pymongo.collection import Collection
 from pydantic.generics import GenericModel
-from src.mongo_client import SandboxMongo as Mongo
-from bio_core.logger import Logger
+from src.logger import Logger
 
 log = Logger.get_logger()
 

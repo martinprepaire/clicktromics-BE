@@ -1,7 +1,9 @@
 from fastapi import APIRouter
+from src.logger import Logger
 
-router = APIRouter(prefix="", tags=[""])
+router = APIRouter(prefix="", tags=["Root Router"])
+log = Logger.get_logger()
 
 @router.get("/")
 def root():
-    return {"message": "API DEV is running"}
+    return {"message": "API is running"}
